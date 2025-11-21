@@ -29,6 +29,19 @@ struct ServerResponse {
     text: Option<String>,
 }
 
+// --- Ollama API 定义 ---
+#[derive(Debug, Serialize)]
+struct OllamaRequest {
+    model: String,
+    prompt: String,
+    stream: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaResponse {
+    response: String,
+}
+
 #[tokio::main]
 async fn main() {
     // 1. 初始化日志
@@ -52,13 +65,49 @@ async fn main() {
     );
     info!("✅ Whisper 模型加载完毕，支持中文识别");
 
-    // 3. 启动服务
+    // 3. 测试 Ollama 连接
+    match test_ollama_connection().await {
+        Ok(_) => info!("✅ Ollama qwen2.5:0.5b 模型连接成功"),
+        Err(e) => {
+            error!(
+                "❌ Ollama 连接失败: {}. 请确保 Ollama 已启动并安装了 qwen2.5:0.5b 模型",
+                e
+            );
+            error!("💡 提示: 运行 'ollama run qwen2.5:0.5b' 来安装模型");
+        }
+    }
+
+    // 4. 启动服务
     let app = Router::new().route("/ws", get(move |ws| ws_handler(ws, ctx.clone())));
     let addr = SocketAddr::from(([0, 0, 0, 0], 4321));
     info!("🚀 心镜 (Heart Mirror) 大脑已启动，监听: {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn test_ollama_connection() -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let test_prompt = "测试";
+
+    let request = OllamaRequest {
+        model: "qwen2.5:0.5b".to_string(),
+        prompt: test_prompt.to_string(),
+        stream: false,
+    };
+
+    let response = client
+        .post("http://127.0.0.1:11434/api/generate")
+        .json(&request)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("Ollama 返回错误状态: {}", response.status()).into())
+    }
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, ctx: Arc<WhisperContext>) -> impl IntoResponse {
@@ -151,14 +200,12 @@ async fn handle_socket(mut socket: WebSocket, ctx: Arc<WhisperContext>) {
                                     );
 
                                     let text = run_whisper_inference(&ctx, &audio_buffer);
-                                    // 1. 在这里转为简体，或者依赖 Prompt 的效果
                                     let clean_text = text.trim();
 
-                                    // 2. 幻觉过滤
+                                    // 幻觉过滤
                                     if !clean_text.is_empty() && clean_text != "你去找我吧" {
-                                        // 3. 情绪分析 (现在能更好地匹配简体关键词了)
-                                        let emotion =
-                                            analyze_emotion(clean_text, max_recorded_energy);
+                                        // 使用 Ollama 进行情绪分析
+                                        let emotion = analyze_emotion_with_llm(clean_text).await;
 
                                         info!("🗣️ 结果: [{}] | 情绪: [{}]", clean_text, emotion);
 
@@ -219,41 +266,54 @@ fn calculate_rms(samples: &[i16]) -> f32 {
     (sum / samples.len() as f32).sqrt()
 }
 
-// --- 简单的综合情绪分析器 ---
-fn analyze_emotion(text: &str, max_energy: f32) -> String {
-    let t = text.to_lowercase();
+// --- 使用 Ollama Qwen2.5:0.5b 进行情绪分析 ---
+async fn analyze_emotion_with_llm(text: &str) -> String {
+    let client = reqwest::Client::new();
 
-    // 1. 极高能量兜底 (大喊大叫)
-    if max_energy > 15000.0 {
-        if t.contains("滚") || t.contains("死") {
-            return "anger".to_string();
+    let prompt = format!(
+    "Analyze the sentiment of the following text. ONLY output ONE word, strictly from this list: [[joy, anger, sadness, fear, calm, neutral, sleep]]. Do NOT output anything else.\n\nText: {}\n\nSentiment:",
+    text
+    );
+
+    let request = OllamaRequest {
+        model: "qwen2.5:1.5b".to_string(),
+        prompt,
+        stream: false,
+    };
+
+    match client
+        .post("http://127.0.0.1:11434/api/generate")
+        .json(&request)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(response) => {
+            if let Ok(ollama_resp) = response.json::<OllamaResponse>().await {
+                let emotion = ollama_resp.response.trim().to_lowercase();
+
+                // 验证返回的情绪是否在允许的列表中
+                let valid_emotions = [
+                    "joy", "anger", "sadness", "fear", "calm", "neutral", "sleep",
+                ];
+                for valid_emotion in valid_emotions.iter() {
+                    if emotion.contains(valid_emotion) {
+                        return valid_emotion.to_string();
+                    }
+                }
+
+                info!("LLM 返回了非预期的情绪: {}, 使用 neutral", emotion);
+                "neutral".to_string()
+            } else {
+                warn!("解析 Ollama 响应失败，使用 neutral");
+                "neutral".to_string()
+            }
         }
-        return "fear".to_string();
+        Err(e) => {
+            warn!("Ollama 请求失败: {}, 使用 neutral", e);
+            "neutral".to_string()
+        }
     }
-
-    // 2. 关键词匹配 (基于简体中文)
-    if t.contains("开心") || t.contains("快乐") || t.contains("哈哈") || t.contains("棒") {
-        return "joy".to_string();
-    }
-    if t.contains("滚") || t.contains("烦") || t.contains("讨厌") || t.contains("气") {
-        return "anger".to_string();
-    }
-    if t.contains("难过") || t.contains("累") || t.contains("苦") || t.contains("失望") {
-        return "sadness".to_string();
-    }
-    if t.contains("怕") || t.contains("吓") || t.contains("救命") {
-        return "fear".to_string();
-    }
-    if t.contains("安") || t.contains("静") || t.contains("睡") {
-        return "sleep".to_string();
-    }
-
-    // 3. 极低能量兜底
-    if max_energy < 1500.0 {
-        return "calm".to_string();
-    }
-
-    "neutral".to_string()
 }
 
 // Whisper 推理函数
@@ -262,10 +322,7 @@ fn run_whisper_inference(ctx: &WhisperContext, data: &[f32]) -> String {
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
 
     params.set_language(Some("zh"));
-
-    // 🔥 关键修改：使用 Prompt 强制模型“模仿”简体中文风格
     params.set_initial_prompt("简体中文");
-
     params.set_n_threads(4);
     params.set_print_special(false);
     params.set_print_progress(false);
