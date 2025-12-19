@@ -19,17 +19,22 @@ pub struct EmotionAnalyzer {
     client: Client,
     model_name: String,
     valid_emotions: &'static [&'static str],
+    api_base_url: String,
 }
 
 impl EmotionAnalyzer {
     /// 创建新的情绪分析器
     pub async fn new() -> Self {
+        let ollama_host =
+            std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://ollama:11434".to_string());
+
         let analyzer = Self {
             client: Client::new(),
             model_name: "qwen2.5:1.5b".to_string(),
             valid_emotions: &[
                 "joy", "anger", "sadness", "fear", "calm", "neutral", "sleep",
             ],
+            api_base_url: format!("{}/api/generate", ollama_host),
         };
 
         analyzer.test_connection().await;
@@ -70,7 +75,7 @@ impl EmotionAnalyzer {
 
         let response = self
             .client
-            .post("http://127.0.0.1:11434/api/generate")
+            .post(&self.api_base_url)
             .json(&request)
             .timeout(Duration::from_secs(10))
             .send()
@@ -104,7 +109,7 @@ impl EmotionAnalyzer {
 
         let response = self
             .client
-            .post("http://127.0.0.1:11434/api/generate")
+            .post(&self.api_base_url)
             .json(&request)
             .timeout(Duration::from_secs(5))
             .send()

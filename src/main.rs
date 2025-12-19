@@ -16,7 +16,14 @@ use speech::SpeechRecognizer;
 async fn main() {
     init_logging();
 
-    let speech_recognizer = Arc::new(SpeechRecognizer::new("ggml-base.bin").await);
+    // 修改：优先从环境变量读取模型路径，默认值为 "ggml-base.bin"
+    let model_path = std::env::var("MODEL_PATH").unwrap_or_else(|_| "ggml-base.bin".to_string());
+
+    info!("正在初始化系统...");
+    info!("加载 Whisper 模型路径: {}", model_path);
+
+    // 传入动态获取的路径
+    let speech_recognizer = Arc::new(SpeechRecognizer::new(&model_path).await);
     let emotion_analyzer = Arc::new(EmotionAnalyzer::new().await);
 
     let app = Router::new().route(
