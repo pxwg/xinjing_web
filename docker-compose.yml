@@ -10,7 +10,8 @@ services:
       - ollama
     environment:
       - MODEL_PATH=ggml-base.bin
-
+      - OLLAMA_HOST=http://ollama:11434
+      
   ollama:
     image: ollama/ollama:latest
     ports:
