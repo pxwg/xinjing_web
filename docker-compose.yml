@@ -1,0 +1,24 @@
+version: '3.8'
+services:
+  xinjing_web:
+    build: .
+    ports:
+      - "4321:4321"
+    volumes:
+      - ./history-emotion.db:/app/history-emotion.db
+    depends_on:
+      - ollama
+    environment:
+      - MODEL_PATH=ggml-base.bin
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    entrypoint: >
+      sh -c "ollama serve & sleep 5 && ollama pull qwen2.5:1.5b && tail -f /dev/null"
+
+volumes:
+  ollama_data:
