@@ -32,7 +32,27 @@ impl EmotionAnalyzer {
             client: Client::new(),
             model_name: "qwen2.5:1.5b".to_string(),
             valid_emotions: &[
-                "joy", "anger", "sadness", "fear", "calm", "neutral", "sleep",
+                "neutral",
+                "happy",
+                "laughing",
+                "funny",
+                "sad",
+                "angry",
+                "crying",
+                "loving",
+                "embarrassed",
+                "surprised",
+                "shocked",
+                "thinking",
+                "winking",
+                "cool",
+                "relaxed",
+                "delicious",
+                "kissy",
+                "confident",
+                "sleepy",
+                "silly",
+                "confused",
             ],
             api_base_url: format!("{}/api/generate", ollama_host),
         };
@@ -90,10 +110,12 @@ impl EmotionAnalyzer {
 
     /// 构建情绪分析提示词
     fn build_emotion_prompt(&self, text: &str) -> String {
-        format!(
+        let prompt = format!(
             "Analyze the sentiment of the following text. ONLY output ONE word, strictly from this list: {:?}. Do NOT output anything else.\n\nText: {}\n\nSentiment:",
-            self.valid_emotions, text
-        )
+            self.valid_emotions, text,
+        );
+        info!("情绪分析提示词: {}", prompt);
+        prompt
     }
 
     /// 发送Ollama请求
