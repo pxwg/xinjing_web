@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <title>日常情绪星云</title>
+    <style>
+      body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Microsoft YaHei', sans-serif; }
+      /* 信息面板 */
+      #info {
+          position: absolute; top: 20px; left: 20px; color: rgba(255,255,255,0.7);
+          pointer-events: none; z-index: 10; user-select: none;
+      }
+      #info h1 { margin: 0 0 10px 0; font-weight: 300; letter-spacing: 2px; }
+      #info p { font-size: 14px; }
+
+      /* 鼠标悬停提示框 (Tooltip) */
+      #tooltip {
+          position: absolute;
+          display: none; /* 默认隐藏 */
+          pointer-events: none; /* 不阻挡鼠标事件 */
+          background: rgba(0, 0, 0, 0.85);
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          padding: 12px;
+          border-radius: 8px;
+          color: #fff;
+          z-index: 100;
+          max-width: 300px;
+          backdrop-filter: blur(5px);
+          box-shadow: 0 0 20px rgba(0,0,0,0.5);
+          transition: opacity 0.2s;
+      }
+      #tooltip .emo-tag {
+          display: inline-block; padding: 2px 6px; border-radius: 4px;
+          font-size: 12px; margin-bottom: 8px; font-weight: bold;
+      }
+      #tooltip .text { font-size: 14px; line-height: 1.4; }
+      #tooltip .date { font-size: 12px; color: #888; margin-top: 8px; }
+    </style>
+    <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+    <script type="importmap">
+      {
+          "imports": {
+              "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+              "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+          }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="info">
+      <h1>EMOTION NEBULA</h1>
+      <p>拖动旋转 | 滚轮缩放 | 鼠标悬停查看记忆</p>
+    </div>
+    <div id="tooltip"></div>
+    <script type="module">
+      import * as THREE from 'three';
+      import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+      import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+      import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+      import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+      import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+      import { GammaCorrectionShader } from 'three/addons/shaders/GammaCorrectionShader.js';
+
+      let scene, camera, renderer, composer, controls;
+      let starsPoints;
+      const raycaster = new THREE.Raycaster();
+      const mouse = new THREE.Vector2(9999, 9999);
+      const tooltip = document.getElementById('tooltip');
+      let hoveredNodeData = null;
+      let sceneRotationSpeedY = 0.00015;
+      let sceneRotationSpeedX = 0.00008;
+
+      // 星云动画相关变量
+      let nebulaAnimationEnabled = true;
+      let nebulaAnimationTimer = null;
+      let animationTime = 0;
+      // --- 辅助函数：生成球体内的随机偏移向量 ---
+      function getRandomVectorInSphere(radius) {
+          const theta = Math.random() * Math.PI * 2;
+          const phi = Math.acos(2 * Math.random() - 1);
+          // 使用 pow(random, 0.5) 让分布稍微均匀一些，不像之前那么聚集在中心
+          const r = Math.pow(Math.random(), 0.6) * radius;
+
+          return new THREE.Vector3(
+              r * Math.sin(phi) * Math.cos(theta),
+              r * Math.sin(phi) * Math.sin(theta),
+              r * Math.cos(phi)
+          );
+      }
+
+      // --- 创建程序化柔和云纹理 ---
+      function createSoftCloudTexture() {
+          const canvas = document.createElement('canvas');
+          canvas.width = 64;
+          canvas.height = 64;
+          const context = canvas.getContext('2d');
+          const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
+          // 调整渐变，让中心更柔和
+          gradient.addColorStop(0, 'rgba(255,255,255,1)');
+          gradient.addColorStop(0.2, 'rgba(255,255,255,0.5)');
+          gradient.addColorStop(0.5, 'rgba(255,255,255,0.1)');
+          gradient.addColorStop(1, 'rgba(0,0,0,0)');
+          context.fillStyle = gradient;
+          context.fillRect(0, 0, 64, 64);
+          return new THREE.CanvasTexture(canvas);
+      }
+
+      const textureLoader = new THREE.TextureLoader();
+      const starTexture = textureLoader.load('https://threejs.org/examples/textures/sprites/disc.png');
+      const cloudTexture = createSoftCloudTexture();
+      const galaxyBgTexture = textureLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/textures/planets/8k_stars_milky_way.jpg');
+
+      const emotionConfigBase = {
+        'happy':   { color: 0xfff7ae },
+        'joy':     { color: 0xffe9a0 },
+        'excited': { color: 0xffb86b },
+        'sad':     { color: 0x3a4fff },
+        'angry':   { color: 0xff5e5b },
+        'fear':    { color: 0x9d7fff },
+        'anxious': { color: 0x7efcff },
+        'neutral': { color: 0xf5ecd7 },
+        'calm':    { color: 0xf7f1b0 }
+      };
+
+      function getEmotionDetails(emoStr) {
+          if (!emoStr) return emotionConfigBase['neutral'];
+          emoStr = emoStr.toLowerCase();
+          for (const key in emotionConfigBase) {
+              if (emoStr.includes(key)) return emotionConfigBase[key];
+          }
+          return emotionConfigBase['neutral'];
+      }
+
+      function init() {
+          scene = new THREE.Scene();
+          // 降低雾的浓度，让远处的星云更清晰
+          scene.fog = new THREE.FogExp2(0x000000, 0.0003);
+
+          camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 8000); // 增加视距
+          camera.position.set(0, 200, 800); // 初始视角拉得更远
+
+          renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+          renderer.setSize(window.innerWidth, window.innerHeight);
+          renderer.setPixelRatio(window.devicePixelRatio);
+          document.body.appendChild(renderer.domElement);
+
+          controls = new OrbitControls(camera, renderer.domElement);
+          controls.enableDamping = true;
+          controls.dampingFactor = 0.05;
+          controls.autoRotate = true;
+          controls.autoRotateSpeed = 0.3;
+          controls.maxDistance = 2500; // 允许拉得更远
+          controls.minDistance = 50;
+          controls.addEventListener('start', function(){
+              controls.autoRotate = false;
+              sceneRotationSpeedX = 0;
+              sceneRotationSpeedY = 0;
+              // 停止星云动画
+              pauseNebulaAnimation();
+          });
+          initPostProcessing();
+          createGalaxyBackground();
+          createBackgroundSharpStars(); // 新增：创建背景碎星
+
+          window.addEventListener('resize', onWindowResize);
+          window.addEventListener('mousemove', onMouseMove);
+      }
+
+      function initPostProcessing() {
+          const renderScene = new RenderPass(scene, camera);
+          // 调整辉光参数，适应更亮的星云核心
+          const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+          bloomPass.threshold = 0.2;
+          bloomPass.strength = 1.4;
+          bloomPass.radius = 0.8;
+
+          const gammaCorrection = new ShaderPass(GammaCorrectionShader);
+
+          composer = new EffectComposer(renderer);
+          composer.addPass(renderScene);
+          composer.addPass(bloomPass);
+          composer.addPass(gammaCorrection);
+      }
+
+      // 原有的银河纹理背景球（提供氛围色）
+      function createGalaxyBackground() {
+          const geometry = new THREE.SphereGeometry(4000, 60, 40);
+          const material = new THREE.MeshBasicMaterial({
+              map: galaxyBgTexture,
+              side: THREE.BackSide,
+              fog: false,
+              transparent: true,
+              opacity: 0.4 // 降低透明度，作为最底层的衬托
+          });
+          const bgSphere = new THREE.Mesh(geometry, material);
+          scene.add(bgSphere);
+      }
+
+      // --- 新增：创建背景锐利小星星 ---
+      function createBackgroundSharpStars() {
+          const positions = [];
+          const colors = [];
+          const starCount = 5000; // 星星数量
+          const geometry = new THREE.BufferGeometry();
+
+          for (let i = 0; i < starCount; i++) {
+              // 分布在比星云更远的范围内
+              const vec = getRandomVectorInSphere(3500);
+              positions.push(vec.x, vec.y, vec.z);
+
+              // 随机灰白色
+              const gray = 0.5 + Math.random() * 0.5;
+              colors.push(gray, gray, gray);
+          }
+
+          geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+          geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+          const material = new THREE.PointsMaterial({
+              size: 2, // 很小
+              vertexColors: true,
+              fog: false, // 不受雾影响，保持清晰
+              transparent: true,
+              opacity: 0.8,
+              map: starTexture // 使用硬边纹理
+          });
+
+          const bgStars = new THREE.Points(geometry, material);
+          scene.add(bgStars);
+      }
+
+      async function loadAndBuildNebula() {
+          try {
+              const res = await fetch('./data.json');
+              const data = await res.json();
+              const nodes = data.nodes;
+              if (nodes.length === 0) return;
+
+              const emotionStats = {};
+              nodes.forEach(node => {
+                  const emoKey = getEmotionKey(node.emotion);
+                  if (!emotionStats[emoKey]) {
+                      emotionStats[emoKey] = { count: 0, config: getEmotionDetails(node.emotion), nodes: [] };
+                  }
+                  emotionStats[emoKey].count++;
+                  emotionStats[emoKey].nodes.push(node);
+              });
+
+              // --- 核心修改：大幅拉大星团之间的间距 ---
+              const layoutRadius = 700; // 从 350 增加到 700
+              for (const key in emotionStats) {
+                  emotionStats[key].center = getRandomVectorInSphere(layoutRadius);
+              }
+              createDataStars(nodes, emotionStats);
+              createNebulaGas(emotionStats);
+
+              // 保存初始位置用于动画
+              saveInitialPositions();
+
+          } catch (e) {
+              console.error(e);
+          }
+      }
+
+      function getEmotionKey(emoStr) {
+          if (!emoStr) return 'neutral';
+          emoStr = emoStr.toLowerCase();
+          if (emoStr.includes('hap') || emoStr.includes('joy')) return 'happy';
+          if (emoStr.includes('sad')) return 'sad';
+          if (emoStr.includes('ang')) return 'angry';
+          if (emoStr.includes('fear')) return 'fear';
+          return 'other';
+      }
+      function createDataStars(allNodes, emotionStats) {
+          const geometry = new THREE.BufferGeometry();
+          const positions = [];
+          const colors = [];
+          geometry.userData.nodeMap = [];
+          geometry.userData.emotionGroups = {}; // 保存每个情绪组的粒子索引范围
+
+          let idx = 0;
+          for (const key in emotionStats) {
+              const stats = emotionStats[key];
+              const center = stats.center;
+              const colorObj = new THREE.Color(stats.config.color);
+
+              const nebulaRadius = 100 + Math.pow(stats.count, 0.7) * 20;
+
+              const startIdx = idx;
+              stats.nodes.forEach(node => {
+                  const offset = getRandomVectorInSphere(nebulaRadius);
+                  positions.push(center.x + offset.x, center.y + offset.y, center.z + offset.z);
+
+                  const brightness = 1.0 + Math.random() * 0.5;
+                  colors.push(colorObj.r * brightness, colorObj.g * brightness, colorObj.b * brightness);
+                  geometry.userData.nodeMap[idx] = node;
+                  idx++;
+              });
+
+              // 保存每个情绪组的信息
+              geometry.userData.emotionGroups[key] = {
+                  startIdx: startIdx,
+                  endIdx: idx,
+                  center: center.clone(),
+                  originalCenter: center.clone(),
+                  nebulaRadius: nebulaRadius
+              };
+          }
+          geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+          geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+          const material = new THREE.PointsMaterial({
+              size: 5.0,
+              vertexColors: true,
+              map: starTexture,
+              transparent: true,
+              opacity: 1.0,
+              depthWrite: false,
+              blending: THREE.AdditiveBlending
+          });
+
+          starsPoints = new THREE.Points(geometry, material);
+          scene.add(starsPoints);
+      }
+
+      function createNebulaGas(emotionStats) {
+          const positions = [];
+          const colors = [];
+          const gasGroupInfo = {}; // 保存气体组信息
+
+          let idx = 0;
+          for (const key in emotionStats) {
+              const stats = emotionStats[key];
+              const center = stats.center;
+              const colorObj = new THREE.Color(stats.config.color);
+
+              const particleCount = Math.min(stats.count * 60, 2000);
+              const cloudRadius = 120 + Math.pow(stats.count, 0.7) * 25;
+
+              const startIdx = idx;
+              for (let i = 0; i < particleCount; i++) {
+                  const offset = getRandomVectorInSphere(cloudRadius);
+                  positions.push(center.x + offset.x, center.y + offset.y, center.z + offset.z);
+
+                  colors.push(colorObj.r * 0.7, colorObj.g * 0.7, colorObj.b * 0.7);
+                  idx++;
+              }
+
+              gasGroupInfo[key] = {
+                  startIdx: startIdx,
+                  endIdx: idx,
+                  center: center.clone(),
+                  originalCenter: center.clone(),
+                  cloudRadius: cloudRadius
+              };
+          }
+
+          const geometry = new THREE.BufferGeometry();
+          geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+          geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+          geometry.userData.gasGroupInfo = gasGroupInfo;
+
+          const material = new THREE.PointsMaterial({
+              size: 35,
+              map: cloudTexture,
+              vertexColors: true,
+              transparent: true,
+              opacity: 0.03,
+              depthWrite: false,
+              blending: THREE.AdditiveBlending
+          });
+
+          const gasClouds = new THREE.Points(geometry, material);
+          gasClouds.name = 'gasClouds';
+          scene.add(gasClouds);
+      }
+      // 保存初始位置
+      function saveInitialPositions() {
+          if (starsPoints) {
+              const positions = starsPoints.geometry.attributes.position.array;
+              starsPoints.geometry.userData.initialPositions = new Float32Array(positions);
+          }
+
+          const gasClouds = scene.getObjectByName('gasClouds');
+          if (gasClouds) {
+              const positions = gasClouds.geometry.attributes.position.array;
+              gasClouds.geometry.userData.initialPositions = new Float32Array(positions);
+          }
+      }
+
+      // 暂停星云动画
+      function pauseNebulaAnimation() {
+          nebulaAnimationEnabled = false;
+          if (nebulaAnimationTimer) {
+              clearTimeout(nebulaAnimationTimer);
+          }
+          // 2秒后恢复
+          nebulaAnimationTimer = setTimeout(() => {
+              nebulaAnimationEnabled = true;
+          }, 2000);
+      }
+
+      // 更新星云动画
+      function updateNebulaAnimation() {
+          if (!nebulaAnimationEnabled) return;
+
+          animationTime += 0.001;
+
+          // 更新数据星星位置
+          if (starsPoints && starsPoints.geometry.userData.initialPositions) {
+              const positions = starsPoints.geometry.attributes.position.array;
+              const initialPositions = starsPoints.geometry.userData.initialPositions;
+              const groups = starsPoints.geometry.userData.emotionGroups;
+
+              for (const key in groups) {
+                  const group = groups[key];
+
+                  // 计算整体偏移（缓慢漂移）
+                  const driftX = Math.sin(animationTime * 0.3 + group.originalCenter.x * 0.01) * 15;
+                  const driftY = Math.cos(animationTime * 0.25 + group.originalCenter.y * 0.01) * 15;
+                  const driftZ = Math.sin(animationTime * 0.35 + group.originalCenter.z * 0.01) * 15;
+
+                  // 不规则形变因子
+                  const deformScale = 1 + Math.sin(animationTime * 0.4 + group.originalCenter.length() * 0.01) * 0.08;
+
+                  for (let i = group.startIdx; i < group.endIdx; i++) {
+                      const i3 = i * 3;
+                      const origX = initialPositions[i3];
+                      const origY = initialPositions[i3 + 1];
+                      const origZ = initialPositions[i3 + 2];
+
+                      // 相对于原始中心的偏移
+                      const offsetX = origX - group.originalCenter.x;
+                      const offsetY = origY - group.originalCenter.y;
+                      const offsetZ = origZ - group.originalCenter.z;
+
+                      // 应用形变和漂移
+                      positions[i3] = group.originalCenter.x + offsetX * deformScale + driftX;
+                      positions[i3 + 1] = group.originalCenter.y + offsetY * deformScale + driftY;
+                      positions[i3 + 2] = group.originalCenter.z + offsetZ * deformScale + driftZ;
+                  }
+              }
+
+              starsPoints.geometry.attributes.position.needsUpdate = true;
+          }
+
+          // 更新气体云位置
+          const gasClouds = scene.getObjectByName('gasClouds');
+          if (gasClouds && gasClouds.geometry.userData.initialPositions) {
+              const positions = gasClouds.geometry.attributes.position.array;
+              const initialPositions = gasClouds.geometry.userData.initialPositions;
+              const groups = gasClouds.geometry.userData.gasGroupInfo;
+
+              for (const key in groups) {
+                  const group = groups[key];
+
+                  // 气体云的漂移稍微不同步，产生层次感
+                  const driftX = Math.sin(animationTime * 0.28 + group.originalCenter.x * 0.01) * 18;
+                  const driftY = Math.cos(animationTime * 0.23 + group.originalCenter.y * 0.01) * 18;
+                  const driftZ = Math.sin(animationTime * 0.32 + group.originalCenter.z * 0.01) * 18;
+
+                  const deformScale = 1 + Math.sin(animationTime * 0.38 + group.originalCenter.length() * 0.01) * 0.1;
+
+                  for (let i = group.startIdx; i < group.endIdx; i++) {
+                      const i3 = i * 3;
+                      const origX = initialPositions[i3];
+                      const origY = initialPositions[i3 + 1];
+                      const origZ = initialPositions[i3 + 2];
+
+                      const offsetX = origX - group.originalCenter.x;
+                      const offsetY = origY - group.originalCenter.y;
+                      const offsetZ = origZ - group.originalCenter.z;
+
+                      positions[i3] = group.originalCenter.x + offsetX * deformScale + driftX;
+                      positions[i3 + 1] = group.originalCenter.y + offsetY * deformScale + driftY;
+                      positions[i3 + 2] = group.originalCenter.z + offsetZ * deformScale + driftZ;
+                  }
+              }
+
+              gasClouds.geometry.attributes.position.needsUpdate = true;
+          }
+      }
+
+      function onMouseMove(event) {
+          mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+          mouse.y = - (event.clientY / window.innerHeight) * 2 + 1;
+          updateTooltipPosition(event);
+          // 鼠标移动时也暂停动画
+          pauseNebulaAnimation();
+      }
+      function updateTooltipPosition(event) {
+          let left = event.clientX + 15;
+          let top = event.clientY + 15;
+          if (left + 250 > window.innerWidth) left = event.clientX - 260;
+          if (top + 100 > window.innerHeight) top = event.clientY - 110;
+
+          tooltip.style.left = left + 'px';
+          tooltip.style.top = top + 'px';
+      }
+      function checkIntersection() {
+          if (!starsPoints) return;
+          raycaster.setFromCamera(mouse, camera);
+          raycaster.params.Points.threshold = 6; // 稍微再增大一点点击范围
+          const intersects = raycaster.intersectObject(starsPoints);
+          if (intersects.length > 0) {
+              const index = intersects[0].index;
+              const nodeData = starsPoints.geometry.userData.nodeMap[index];
+              if (nodeData && nodeData !== hoveredNodeData) {
+                  hoveredNodeData = nodeData;
+                  showTooltip(nodeData);
+                  document.body.style.cursor = 'pointer';
+              }
+          } else {
+              if (hoveredNodeData) {
+                  hoveredNodeData = null;
+                  hideTooltip();
+                  document.body.style.cursor = 'default';
+              }
+          }
+      }
+      function showTooltip(data) {
+          const emoConfig = getEmotionDetails(data.emotion);
+          const dateStr = new Date(data.created_at).toLocaleString();
+          const colorHex = '#' + new THREE.Color(emoConfig.color).getHexString();
+          tooltip.innerHTML = `
+              <div class="emo-tag" style="background-color: ${colorHex};box-shadow: 0 0 10px ${colorHex};">${data.emotion}</div>
+              <div class="text">${data.text}</div>
+              <div class="date">${dateStr}</div>
+          `;
+          tooltip.style.display = 'block';
+          requestAnimationFrame(() => { tooltip.style.opacity = 1; });
+      }
+      function hideTooltip() {
+          tooltip.style.opacity = 0;
+          setTimeout(() => { if (!hoveredNodeData) tooltip.style.display = 'none'; }, 200);
+      }
+      function onWindowResize() {
+          camera.aspect = window.innerWidth / window.innerHeight;
+          camera.updateProjectionMatrix();
+          renderer.setSize(window.innerWidth, window.innerHeight);
+          composer.setSize(window.innerWidth, window.innerHeight);
+      }
+      function animate() {
+          requestAnimationFrame(animate);
+          controls.update();
+
+          scene.rotation.y += sceneRotationSpeedY;
+          scene.rotation.x += sceneRotationSpeedX;
+
+          // 更新星云动画
+          updateNebulaAnimation();
+
+          checkIntersection();
+          composer.render();
+      }
+
+      init();
+      loadAndBuildNebula();
+      animate();
+    </script>
+  </body>
+</html>
