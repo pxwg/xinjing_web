@@ -67,14 +67,15 @@
       const mouse = new THREE.Vector2(9999, 9999);
       const tooltip = document.getElementById('tooltip');
       let hoveredNodeData = null;
-      let sceneRotationSpeedY = 0.00015;
-      let sceneRotationSpeedX = 0.00008;
+      const sceneRotationSpeedYTarget = 0.00008; // 降低目标旋转速度
+      const sceneRotationSpeedXTarget = 0.00004;
+      let sceneRotationSpeedY = sceneRotationSpeedYTarget;
+      let sceneRotationSpeedX = sceneRotationSpeedXTarget;
 
       // 星云动画相关变量
       let nebulaAnimationEnabled = true;
       let nebulaAnimationTimer = null;
       let animationTime = 0;
-      // --- 辅助函数：生成球体内的随机偏移向量 ---
       function getRandomVectorInSphere(radius) {
           const theta = Math.random() * Math.PI * 2;
           const phi = Math.acos(2 * Math.random() - 1);
@@ -147,10 +148,6 @@
           controls = new OrbitControls(camera, renderer.domElement);
           controls.enableDamping = true;
           controls.dampingFactor = 0.05;
-          controls.autoRotate = true;
-          controls.autoRotateSpeed = 0.3;
-          controls.maxDistance = 2500; // 允许拉得更远
-          controls.minDistance = 50;
           controls.addEventListener('start', function(){
               controls.autoRotate = false;
               sceneRotationSpeedX = 0;
@@ -374,20 +371,6 @@
           gasClouds.name = 'gasClouds';
           scene.add(gasClouds);
       }
-      // 保存初始位置
-      function saveInitialPositions() {
-          if (starsPoints) {
-              const positions = starsPoints.geometry.attributes.position.array;
-              starsPoints.geometry.userData.initialPositions = new Float32Array(positions);
-          }
-
-          const gasClouds = scene.getObjectByName('gasClouds');
-          if (gasClouds) {
-              const positions = gasClouds.geometry.attributes.position.array;
-              gasClouds.geometry.userData.initialPositions = new Float32Array(positions);
-          }
-      }
-
       // 暂停星云动画
       function pauseNebulaAnimation() {
           nebulaAnimationEnabled = false;
@@ -397,6 +380,7 @@
           // 2秒后恢复
           nebulaAnimationTimer = setTimeout(() => {
               nebulaAnimationEnabled = true;
+              // 恢复旋转速度（平滑过渡将在animate中处理）
           }, 2000);
       }
 
@@ -544,6 +528,17 @@
           requestAnimationFrame(animate);
           controls.update();
 
+          // 平滑恢复旋转速度
+          if (nebulaAnimationEnabled) {
+              // 逐渐加速到目标速度
+              sceneRotationSpeedY += (sceneRotationSpeedYTarget - sceneRotationSpeedY) * 0.02;
+              sceneRotationSpeedX += (sceneRotationSpeedXTarget - sceneRotationSpeedX) * 0.02;
+          } else {
+              // 逐渐减速到0
+              sceneRotationSpeedY *= 0.95;
+              sceneRotationSpeedX *= 0.95;
+          }
+
           scene.rotation.y += sceneRotationSpeedY;
           scene.rotation.x += sceneRotationSpeedX;
 
@@ -552,11 +547,10 @@
 
           checkIntersection();
           composer.render();
-      }
-
-      init();
-      loadAndBuildNebula();
-      animate();
+        }
+        init();
+        loadAndBuildNebula();
+        animate();
     </script>
   </body>
 </html>
