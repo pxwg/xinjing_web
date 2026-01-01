@@ -1,5 +1,8 @@
 use opus::{Channels, Decoder};
-use tracing::{error, warn};
+use std::fs::File;
+use std::io::Write;
+use std::path::Path;
+use tracing::{error, info, warn};
 
 pub struct AudioProcessor {
     decoder: Decoder,
@@ -101,6 +104,12 @@ impl AudioProcessor {
     fn finalize_recording(&mut self) -> Option<Vec<f32>> {
         if self.audio_buffer.len() > 8000 {
             let result = self.audio_buffer.clone();
+
+            // 仅在debug模式下保存音频到本地文件
+            #[cfg(debug_assertions)]
+            if let Err(e) = self.save_audio_to_file(&result) {
+                error!("保存音频文件失败: {}", e);
+            }
             self.reset_state();
             Some(result)
         } else {
@@ -123,6 +132,64 @@ impl AudioProcessor {
             warn!("缓冲区过大，重置");
             self.reset_state();
         }
+    }
+
+    /// 将音频数据保存为WAV文件
+    fn save_audio_to_file(&self, audio_data: &[f32]) -> Result<(), Box<dyn std::error::Error>> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // 创建唯一的文件名
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+        let filename = format!("audio_capture_{}.wav", timestamp);
+
+        // 确保audio目录存在
+        std::fs::create_dir_all("audio")?;
+        let filepath = Path::new("audio").join(&filename);
+
+        // WAV文件参数
+        let sample_rate = 16000u32;
+        let num_channels = 1u16;
+        let bits_per_sample = 16u16;
+        let byte_rate = sample_rate * num_channels as u32 * bits_per_sample as u32 / 8;
+        let block_align = num_channels * bits_per_sample / 8;
+
+        // 转换f32到i16
+        let pcm_data: Vec<i16> = audio_data
+            .iter()
+            .map(|&sample| (sample * 32767.0).clamp(-32768.0, 32767.0) as i16)
+            .collect();
+
+        let data_size = pcm_data.len() * 2; // 2 bytes per sample
+        let file_size = 36 + data_size;
+
+        let mut file = File::create(&filepath)?;
+
+        // WAV header
+        file.write_all(b"RIFF")?;
+        file.write_all(&(file_size as u32).to_le_bytes())?;
+        file.write_all(b"WAVE")?;
+
+        // fmt chunk
+        file.write_all(b"fmt ")?;
+        file.write_all(&16u32.to_le_bytes())?; // chunk size
+        file.write_all(&1u16.to_le_bytes())?; // audio format (PCM)
+        file.write_all(&num_channels.to_le_bytes())?;
+        file.write_all(&sample_rate.to_le_bytes())?;
+        file.write_all(&byte_rate.to_le_bytes())?;
+        file.write_all(&block_align.to_le_bytes())?;
+        file.write_all(&bits_per_sample.to_le_bytes())?;
+
+        // data chunk
+        file.write_all(b"data")?;
+        file.write_all(&(data_size as u32).to_le_bytes())?;
+
+        // PCM data
+        for sample in pcm_data {
+            file.write_all(&sample.to_le_bytes())?;
+        }
+
+        info!("音频已保存到: {}", filepath.display());
+        Ok(())
     }
 }
 

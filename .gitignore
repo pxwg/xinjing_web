@@ -1,4 +1,5 @@
 CLAUDE.md
 /target
+audio/
 *.bin
 *.db
