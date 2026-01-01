@@ -1,6 +1,8 @@
 use axum::extract::ws::{Message, WebSocket};
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
+// 引入 WhisperState
+use whisper_rs::WhisperState;
 
 use crate::audio::AudioProcessor;
 use crate::emotion::EmotionAnalyzer;
@@ -23,6 +25,18 @@ pub async fn handle_connection(
         }
     };
 
+    // 1. 在连接开始时，只创建一次 Whisper State
+    let mut whisper_state = match speech_recognizer.create_state() {
+        Ok(state) => {
+            info!("Whisper State 初始化成功 (缓冲区已分配)");
+            state
+        }
+        Err(e) => {
+            error!("Whisper State 初始化失败: {}", e);
+            return;
+        }
+    };
+
     send_initial_response(&mut socket).await;
 
     while let Some(msg) = socket.recv().await {
@@ -35,6 +49,7 @@ pub async fn handle_connection(
                     &mut socket,
                     &mut audio_processor,
                     &speech_recognizer,
+                    &mut whisper_state, // 2. 传入 state 的可变引用
                     &emotion_analyzer,
                     &data,
                 )
@@ -46,6 +61,7 @@ pub async fn handle_connection(
     }
 
     info!("连接断开");
+    // whisper_state 在这里会被自动释放
 }
 
 /// 发送初始连接响应
@@ -83,11 +99,19 @@ async fn handle_audio_message(
     socket: &mut WebSocket,
     audio_processor: &mut AudioProcessor,
     speech_recognizer: &Arc<SpeechRecognizer>,
+    whisper_state: &mut WhisperState, // 接收 state
     emotion_analyzer: &Arc<EmotionAnalyzer>,
     audio_data: &[u8],
 ) {
     if let Some(complete_audio) = audio_processor.process_audio(audio_data) {
-        process_complete_speech(socket, speech_recognizer, emotion_analyzer, complete_audio).await;
+        process_complete_speech(
+            socket,
+            speech_recognizer,
+            whisper_state, // 传递 state
+            emotion_analyzer,
+            complete_audio,
+        )
+        .await;
     }
 }
 
@@ -95,10 +119,12 @@ async fn handle_audio_message(
 async fn process_complete_speech(
     socket: &mut WebSocket,
     speech_recognizer: &Arc<SpeechRecognizer>,
+    whisper_state: &mut WhisperState, // 接收 state
     emotion_analyzer: &Arc<EmotionAnalyzer>,
     audio_data: Vec<f32>,
 ) {
-    let text = speech_recognizer.recognize(&audio_data);
+    // 3. 使用 recognize_with_state 进行推理
+    let text = speech_recognizer.recognize_with_state(whisper_state, &audio_data);
     let clean_text = text.trim();
 
     if is_valid_speech(clean_text) {

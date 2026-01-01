@@ -1,6 +1,9 @@
 use std::path::Path;
 use tracing::{error, info};
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+// 引入 WhisperState
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+};
 
 pub struct SpeechRecognizer {
     context: WhisperContext,
@@ -21,7 +24,26 @@ impl SpeechRecognizer {
         Self { context }
     }
 
-    /// 对音频数据进行语音识别
+    /// 创建一个新的 Whisper 状态 (State)
+    /// 这个状态包含了 KV Cache 和计算缓冲区，应该被复用
+    pub fn create_state(&self) -> Result<WhisperState, whisper_rs::WhisperError> {
+        self.context.create_state()
+    }
+
+    /// 使用指定的状态进行语音识别 (复用 State，避免重新初始化)
+    pub fn recognize_with_state(&self, state: &mut WhisperState, audio_data: &[f32]) -> String {
+        let params = self.create_inference_params();
+
+        // 使用传入的 state 进行推理
+        if let Err(e) = state.full(params, audio_data) {
+            error!("Whisper推理失败: {}", e);
+            return String::new();
+        }
+
+        self.extract_text_from_segments(state)
+    }
+
+    /// (保留原方法作为兼容，但不建议在频繁调用中使用)
     pub fn recognize(&self, audio_data: &[f32]) -> String {
         let mut state = match self.context.create_state() {
             Ok(state) => state,
@@ -30,15 +52,7 @@ impl SpeechRecognizer {
                 return String::new();
             }
         };
-
-        let params = self.create_inference_params();
-
-        if let Err(e) = state.full(params, audio_data) {
-            error!("Whisper推理失败: {}", e);
-            return String::new();
-        }
-
-        self.extract_text_from_segments(&state)
+        self.recognize_with_state(&mut state, audio_data)
     }
 
     /// 验证模型文件是否存在
@@ -59,11 +73,12 @@ impl SpeechRecognizer {
         params.set_n_threads(4);
         params.set_print_special(false);
         params.set_print_progress(false);
+        // params.set_print_timestamps(true);
         params
     }
 
     /// 从分段中提取文本
-    fn extract_text_from_segments(&self, state: &whisper_rs::WhisperState) -> String {
+    fn extract_text_from_segments(&self, state: &WhisperState) -> String {
         let num_segments = state.full_n_segments();
         let mut result = String::new();
 

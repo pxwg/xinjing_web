@@ -34,8 +34,7 @@ impl EmotionAnalyzer {
             valid_emotions: &[
                 "neutral",
                 "happy",
-                "laughing",
-                "funny",
+                "joy",
                 "sad",
                 "angry",
                 "crying",
